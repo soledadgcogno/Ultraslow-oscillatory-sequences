@@ -1,0 +1,684 @@
+clear all
+close all
+
+dbeh_path='C:\Users\xscogno\MATLAB\Flavio2\Waves\Tracking data\';
+rec_data_path = 'C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+dpath_spikes='C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+dpath_sorting='C:\Users\xscogno\MATLAB\Flavio2\Waves\Sorting\';
+dpath='C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+save_data_path = 'C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+
+[big_table, waves] = get_big_table();
+
+%% V1 sessions
+
+V1_ses=find(big_table(:,10)<0); %Sessions inthe in MEC
+adults=find(big_table(:,3)>15); %Sessions inthe of adults
+sessions=intersect(V1_ses,adults);
+count=0;
+ws=big_table(sessions,6);
+index_nan=isnan(ws);
+sessions(index_nan)=[];
+session_number=big_table(sessions,4);
+days=big_table(sessions,3);
+repeated_days=find(diff(days)==0);
+clear index_to_delete
+index_to_delete=[];
+count=0;
+for w=1:length(repeated_days)
+    N1=big_table(sessions(repeated_days(w)),12);
+    N2=big_table(sessions(repeated_days(w)+1),12);
+    
+    if (N1>N2)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w)+1;
+    elseif  (N1<N2)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w);    
+    else
+        print('Other case');
+    end   
+end
+sessions(index_to_delete)=[];
+big_table_2=big_table(sessions,:);
+V1_sessions=sessions;
+
+% Calculates properties of waves and behavioral variables
+
+clus=10;
+count=0;
+
+speed_smoothing_kernel=15;
+threshold_still=2;
+gap_for_motion=0;
+gap_for_still=0;
+
+R=8.5145;
+ind_still=0;
+ind_still_sh=0;
+ind_we=0;
+cont_w=0;
+
+% full_position=[]; %Concatenates position on the wheel across all sessions with waves
+% full_tot_position=[]; %Concatenates total position across all sessions with waves
+full_speed=[]; %Concatenates speed across all sessions with waves
+% full_ac=[]; %Concatenates ac across all sessions with waves
+% full_wave_vec=[];   %Concatenates wave_vec across all sessions with waves
+% number_of_laps_per_wave=[];
+% duration_waves_pooled=[];
+% epochs_motion_pooled=[];
+% epochs_still_pooled=[];
+
+cont=0;
+count_iwi=0;
+corr_values_VIS=[];
+corr_values_VIS_smoothed=[];
+for w=1:length(V1_sessions) %We exclude litter 5 in this analysis
+    row_w=V1_sessions(w);
+    disp(w)
+    %Parameters
+    count=count+1;
+    if num2str(big_table(V1_sessions(w),2))=='1'
+        mouse=92227;
+    elseif num2str(big_table(V1_sessions(w),2))=='2'
+        mouse=92229;
+    elseif num2str(big_table(V1_sessions(w),2))=='3'
+        mouse=60961;
+    end
+    day=big_table(V1_sessions(w),3);
+    s=big_table(V1_sessions(w),4);
+    munit=big_table(V1_sessions(w),5);
+    dt=66;
+    num_clus_discr=10;
+    downsample_factor=1;
+    make_fig=0;
+
+    %Load spike data
+    load([rec_data_path,strcat('recording_dates_',num2str(mouse),'.mat')]);
+    if isfield(dates,'actual_day')==1
+        day=find(dates.actual_day==day);
+    end
+    file_name=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',num2str(mouse),'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name,'-mat');
+    spikes=full(spikes_d_s);
+    [~,T]=size(spikes);
+    file_name_osf=[dpath ['spikes_30ms_Do_THR1p5_SNRH_FoV1','_',num2str(mouse),'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name_osf,'-mat');
+    spikes_d_osf=full(spikes_d_s);
+    [N,T_osf]=size(spikes_d_osf);
+    clear spike_smoothed; for n=1:N spike_smoothed(n,:)=smooth(spikes(n,:),speed_smoothing_kernel); end
+
+    % Load behavioral data
+    if length(num2str(dates.days(day)))==7
+        st=num2str(dates.days(day));
+        st_new=['0',st];
+        file_name_beh=[dbeh_path,num2str(mouse),'\Flavio_2P_V1_Spring 2020_',num2str(mouse),'_',st_new,'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    else
+        file_name_beh=[dbeh_path,num2str(mouse),'\Flavio_2P_V1_Spring 2020_',num2str(mouse),'_',num2str(dates.days(day)),'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    end
+    alfa= table2array(readtable(file_name_beh)); % table with behavioral information
+    timestam=alfa(:,1); %Camera time points
+    %Order: Timestamps	Clock	Position	Lap_position	Lap_index	Motor
+    tot_position=alfa(:,3)/10; %in cm
+    lap_position=alfa(:,4)/10; %in cm
+    lap_index=alfa(:,5);
+    motor=alfa(:,6);
+
+    %%%%%%%%%%%%%%%%%%%%%% Quantities from the table
+    R=max(lap_position)/(2*pi); %in mm
+    speed=diff(tot_position)./diff(timestam); %cm/s % No smoothing
+    %         ac=diff(speed)./diff(timestam(1:end-1));
+%     angle= lap_position/R;
+%     angular_speed=angdiff(angle)./diff(timestam);
+
+    %%%%%%%%%%%%%%%%%%%%%% Imaging time steps and camera time steps
+    sampling_rate_tracking=1/(alfa(3,1)-alfa(2,1));
+    dt_rate_imaging=1/30.95;
+    sampling_rate_imaging_d=1/(dt_rate_imaging*4);
+
+    times_s=0.0323:0.0323:(T_osf*0.0323);
+    times_s_d=downsample(times_s,4);
+    times_tracking=times_s_d(1:T); %Imaging time points
+
+    %%%%%%%%%%%%%%%%%%%%%% Interpolated and downsampled quantities
+    %         angle_d=interp1(timestam,angle,times_tracking);
+%     tot_position_d=interp1(timestam,tot_position,times_tracking);
+%     lap_index_d=interp1(timestam,lap_index,times_tracking);
+%     lap_position_d=interp1(timestam,lap_position,times_tracking);
+%     motor_d=interp1(timestam,motor,times_tracking);
+    speed_d=interp1(timestam(1:end-1),speed,times_tracking(1:end-1));
+    speed_d=smooth(speed_d,speed_smoothing_kernel);
+    speed_d2=speed_d;
+    speed_d2(speed_d2<threshold_still)=0;
+    speed_d2(end+1)=speed_d2(end);
+%     ac_d=diff(speed_d2)./diff(times_tracking(1:end));
+%     ac_d(end+1)=ac_d(end);
+%     full_tot_position=[full_tot_position;tot_position_d];
+%     full_position=[full_position;lap_position_d];
+%     full_speed=[full_speed;speed_d2];   %Concatenates speed across all sessions with waves
+%     full_ac=[full_ac;ac_d];   %Concatenates ac across all sessions with waves
+    
+     clear aux; aux=corr(spikes',speed_d2);
+     corr_values_VIS=[corr_values_VIS;aux];
+     clear aux; aux=corr(spike_smoothed',speed_d2); corr_values_VIS_smoothed=[corr_values_VIS_smoothed;aux];
+
+        
+    clear spikes sorting sorting spikes_d_s table_u table_motion table_still motion
+    clear alfa angle_d cells_d lap_index_d lap_position_d speed speed_d speed_d2 spikes spikes_d_osf spikes_d_s subset_waves times_s times_s_d times_tracking ...
+        timestam tot_position tot_position_d ac_d motion subset_nowaves subset_waves subset_norunning subset_running wave_vec wave_epoch_speed_per_ses ... 
+        wave_epoch_ac_per_ses T T_h T_osf table_u_copy angle angular_speed  lap_index lap_position motor motor_d fraction_still_waves epochs_motion epochs_still
+    clear idx_iwi iwi aux
+end
+
+
+%% PaS sessions
+
+PaS_ses1=find(big_table(:,10)<=3); %Sessions inthe in MEC
+PaS_ses2=find(big_table(:,10)>0); %Sessions inthe in MEC
+PaS_ses=intersect(PaS_ses1,PaS_ses2);
+adults=find(big_table(:,3)>15); %Sessions inthe of adults
+sessions=intersect(PaS_ses,adults);
+count=0;
+ws=big_table(sessions,6);
+index_nan=isnan(ws);
+sessions(index_nan)=[];
+session_number=big_table(sessions,4);
+days=big_table(sessions,3);
+repeated_days=find(diff(days)==0);
+clear index_to_delete
+count=0;
+for w=1:length(repeated_days)
+    N1=big_table(sessions(repeated_days(w)),12);
+    N2=big_table(sessions(repeated_days(w)+1),12);    
+    if (N1>N2)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w)+1;
+    elseif  (N1<N2)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w);    
+    else
+        print('Other case');
+    end   
+end
+sessions(index_to_delete)=[];
+big_table_2=big_table(sessions,:);
+PaS_sessions=sessions;
+PaS_ses1=find(big_table(:,10)<=3); %Sessions inthe in MEC
+PaS_ses2=find(big_table(:,10)>0); %Sessions inthe in MEC
+PaS_ses=intersect(PaS_ses1,PaS_ses2);
+adults=find(big_table(:,3)>15); %Sessions inthe of adults
+sessions=intersect(PaS_ses,adults);
+count=0;
+ws=big_table(sessions,6);
+index_nan=isnan(ws);
+sessions(index_nan)=[];
+session_number=big_table(sessions,4);
+days=big_table(sessions,3);
+repeated_days=find(diff(days)==0);
+clear index_to_delete
+count=0;
+for w=1:length(repeated_days)
+    N1=big_table(sessions(repeated_days(w)),12);
+    N2=big_table(sessions(repeated_days(w)+1),12);
+    
+    if (N1>N2)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w)+1;
+    elseif  (N1<N2)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w);
+    else
+        print('Other case');
+    end
+end
+sessions(index_to_delete)=[];
+big_table_2=big_table(sessions,:);
+PaS_sessions=sessions;
+
+% Calculates properties of waves and behavioral variables
+clus=10;
+count=0;
+speed_smoothing_kernel=15;
+threshold_still=2;
+gap_for_motion=0;
+gap_for_still=0;
+R=8.5145;
+ind_still=0;
+ind_still_sh=0;
+ind_we=0;
+cont_w=0;
+full_speed=[]; %Concatenates speed across all sessions with waves
+cont=0;
+count_iwi=0;
+corr_values_PaS=[];
+corr_values_PaS_smoothed=[];
+for w=1:18%length(PaS_sessions) %We exclude litter 5 in this analysis
+    row_w=PaS_sessions(w);
+    disp(w)
+    
+    %Parameters
+    count=count+1;
+    mouse=['L',num2str(big_table(PaS_sessions(w),1)),'M',num2str(big_table(PaS_sessions(w),2))];
+    day=big_table(PaS_sessions(w),3);
+    s=big_table(PaS_sessions(w),4);
+    munit=big_table(PaS_sessions(w),5);   
+    
+    dt=66;
+    num_clus_discr=10;
+    downsample_factor=1;
+    make_fig=0;
+    
+    %Load spike data
+    load([rec_data_path,strcat('recording_dates_',mouse,'.mat')]);    
+    if isfield(dates,'actual_day')==1
+        day=find(dates.actual_day==day);
+    end    
+    file_name=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name,'-mat');
+    spikes=full(spikes_d_s);
+    [~,T]=size(spikes);
+    file_name_osf=[dpath ['spikes_30ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name_osf,'-mat');
+    spikes_d_osf=full(spikes_d_s);
+    [N,T_osf]=size(spikes_d_osf);
+    clear spike_smoothed; for n=1:N spike_smoothed(n,:)=smooth(spikes(n,:),speed_smoothing_kernel); end
+
+    % Load behavioral data
+    if length(num2str(dates.days(day)))==7
+        st=num2str(dates.days(day));
+        st_new=['0',st];
+        file_name_beh=[dbeh_path,num2str(mouse),'\Flavio_2P_',mouse,'_',st_new,'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    else
+        file_name_beh=[dbeh_path,num2str(mouse),'\Flavio_2P_',mouse,'_',num2str(dates.days(day)),'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    end    
+    alfa= table2array(readtable(file_name_beh)); % table with behavioral information
+    timestam=alfa(:,1); %Camera time points
+    
+    if w>0    
+        tot_position=alfa(:,2)/10; %in cm        
+        %%%%%%%%%%%%%%%%%%%%%% Quantities from the table        
+        speed=diff(tot_position)./diff(timestam); %cm/s % Smoothing kernel of 2.3 seconds        
+        %%%%%%%%%%%%%%%%%%%%%% Imaging time steps and camera time steps        
+        times_s=0.0323:0.0323:(T_osf*0.0323);
+        times_s_d=downsample(times_s,4);
+        times_tracking=times_s_d(1:T); %Imaging time points        
+        %%%%%%%%%%%%%%%%%%%%%% Interpolated and downsampled quantities
+        tot_position_d=interp1(timestam(1:end),tot_position,times_tracking(1:end)); %Interpolated to imagining time points
+        lap_index_d = floor(abs(tot_position_d./(2*pi*R)));
+        lap_index_d(find(lap_index_d==0))=0;
+        lap_position_d=tot_position_d-(2*pi*R.*(lap_index_d));
+%         angle_d=lap_position_d./R;        
+        speed_d=interp1(timestam(1:end-1),speed,times_tracking(1:end-1)); %Interpolated to imagining time points
+        speed_d=smooth(speed_d,speed_smoothing_kernel);
+        speed_d2=speed_d;
+        speed_d2(speed_d2<threshold_still)=0;
+        speed_d2(end+1)=speed_d2(end);
+    end   
+
+     clear aux; aux=corr(spikes',speed_d2);
+     corr_values_PaS=[corr_values_PaS;aux];
+     clear aux; aux=corr(spike_smoothed',speed_d2); corr_values_PaS_smoothed=[corr_values_PaS_smoothed;aux];
+
+        
+    clear spikes sorting sorting spikes_d_s table_u table_motion table_still motion
+    clear alfa angle_d cells_d lap_index_d lap_position_d speed speed_d speed_d2 spikes spikes_d_osf spikes_d_s subset_waves times_s times_s_d times_tracking ...
+        timestam tot_position tot_position_d ac_d motion subset_nowaves subset_waves subset_norunning subset_running wave_vec wave_epoch_speed_per_ses ... 
+        wave_epoch_ac_per_ses T T_h T_osf table_u_copy angle angular_speed  lap_index lap_position motor motor_d fraction_still_waves epochs_motion epochs_still
+    clear idx_iwi iwi
+end
+
+%% MEC waves
+
+sf=7.73; 
+clus=10;
+count=0;
+speed_smoothing_kernel=15;
+threshold_still=2;
+gap_for_motion=0;
+gap_for_still=0;
+R=8.5145;
+ind_still=0;
+ind_still_sh=0;
+ind_we=0;
+cont_w=0;
+full_speed=[]; %Concatenates speed across all sessions with waves
+cont=0;
+count_iwi=0;
+count_iwi_2=0;
+corr_values_MEC=[];
+corr_values_MEC_smoothed=[];
+for w=1:10 %We exclude litter 5 in this analysis
+    row_w=waves(w);
+    disp(w)    
+    %Parameters
+    count=count+1;
+    mouse=['L',num2str(big_table(waves(w),1)),'M',num2str(big_table(waves(w),2))];
+    animal(w,:)=mouse;
+    day=big_table(waves(w),3);
+    s=big_table(waves(w),4);    
+    munit=big_table(waves(w),5); 
+    dt=floor(big_table(waves(w),8));
+    if isinteger(dt)
+    else
+        dt=floor(dt);
+    end
+    num_clus_discr=10;
+    downsample_factor=1;
+    make_fig=0;
+    
+    %Load spike data
+    load([rec_data_path,strcat('recording_dates_',mouse,'.mat')]);
+    file_name=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name,'-mat');
+    spikes=full(spikes_d_s);
+    [~,T]=size(spikes);
+    file_name_osf=[dpath ['spikes_30ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name_osf,'-mat');
+    spikes_d_osf=full(spikes_d_s);
+    [N,T_osf]=size(spikes_d_osf);        
+    clear spike_smoothed; for n=1:N spike_smoothed(n,:)=smooth(spikes(n,:),speed_smoothing_kernel); end
+
+    % Idenfity waves. Generates spike matrix with only wave frames
+    [table_u,N,T]=identify_waves_latestversion_6_f(mouse,day,num_clus_discr,dt,make_fig,spikes);       
+    table_u_copy=table_u;
+    [~,b]=sort(table_u(:,1));
+    table_u=table_u(b,:);   
+     
+    
+    % Load behavioral data
+    if length(num2str(dates.days(day)))==7
+        st=num2str(dates.days(day));
+        st_new=['0',st];
+        file_name_beh=[dbeh_path,mouse,'\Flavio_2P_',mouse,'_',st_new,'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    else
+        file_name_beh=[dbeh_path,mouse,'\Flavio_2P_',mouse,'_',num2str(dates.days(day)),'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    end    
+    alfa= table2array(readtable(file_name_beh)); % table with behavioral information
+    timestam=alfa(:,1); %Camera time points    
+    if w>3 
+        %Order: Timestamps	Clock	Position	Lap_position	Lap_index	Motor
+        tot_position=alfa(:,3)/10; %in cm
+        lap_position=alfa(:,4)/10; %in cm
+        lap_index=alfa(:,5);
+        motor=alfa(:,6);
+        
+        %%%%%%%%%%%%%%%%%%%%%% Quantities from the table
+        R=max(lap_position)/(2*pi); %in cm
+        speed=diff(tot_position)./diff(timestam); %cm/s % No smoothing
+%         ac=diff(speed)./diff(timestam(1:end-1));
+        angle= lap_position/R;
+        angular_speed=angdiff(angle)./diff(timestam); 
+        
+        %%%%%%%%%%%%%%%%%%%%%% Imaging time steps and camera time steps
+        sampling_rate_tracking=1/(alfa(3,1)-alfa(2,1)); %Hz
+        dt_rate_imaging=1/30.95;
+        sampling_rate_imaging_d=1/(dt_rate_imaging*4);
+        
+        times_s=0.0323:0.0323:(T_osf*0.0323);
+        times_s_d=downsample(times_s,4);
+        times_tracking=times_s_d(1:T); %Imaging time points
+        
+        %%%%%%%%%%%%%%%%%%%%%% Interpolated and downsampled quantities      
+        speed_d=interp1(timestam(1:end-1),speed,times_tracking(1:end-1));
+        speed_d=smooth(speed_d,speed_smoothing_kernel); %2 seconds of smoothing
+        speed_d2=speed_d;
+        speed_d2(speed_d2<threshold_still)=0;
+        speed_d2(end+1)=speed_d2(end);
+        
+    elseif w<=3
+        tot_position=alfa(:,2)/10; %in cm        
+        %%%%%%%%%%%%%%%%%%%%%% Quantities from the table        
+        speed=diff(tot_position)./diff(timestam); %cm/s % Smoothing kernel of 2.3 seconds        
+        %%%%%%%%%%%%%%%%%%%%%% Imaging time steps and camera time steps        
+        times_s=0.0323:0.0323:(T_osf*0.0323);
+        times_s_d=downsample(times_s,4);
+        times_tracking=times_s_d(1:T); %Imaging time points        
+        %%%%%%%%%%%%%%%%%%%%%% Interpolated and downsampled quantities
+%         angle_d=lap_position_d./R;        
+        speed_d=interp1(timestam(1:end-1),speed,times_tracking(1:end-1)); %Interpolated to imagining time points
+        speed_d=smooth(speed_d,speed_smoothing_kernel);
+        speed_d2=speed_d;
+        speed_d2(speed_d2<threshold_still)=0;
+        speed_d2(end+1)=speed_d2(end);
+    end
+    full_speed=[full_speed;speed_d2];   %Concatenates speed across all sessions with waves
+    
+    min_speed(w)=min(speed_d2);
+    max_speed(w)=max(speed_d2);
+    median_speed(w)=median(speed_d2);
+
+    % speed values in frames consistent with waves. Array for all wave-sessions, with info per wave.
+    speed_c=[];
+    spike_c_smoothed=[];
+    spike_c=[];
+
+    for we=1:size(table_u,1) %loop on number of waves per session
+        clear aux; aux=speed_d2(table_u(we,1):table_u(we,2));
+        speed_c=[speed_c;aux];
+        clear aux; aux=spike_smoothed(:,table_u(we,1):table_u(we,2));
+        spike_c_smoothed=[spike_c_smoothed,aux];
+        clear aux; aux=spikes(:,table_u(we,1):table_u(we,2));
+        spike_c=[spike_c,aux];
+    end
+
+    clear aux; aux=corr(spike_c',speed_c); corr_values_MEC=[corr_values_MEC;aux];
+    clear aux; aux=corr(spike_c_smoothed',speed_c); corr_values_MEC_smoothed=[corr_values_MEC_smoothed;aux];
+
+    clear spikes sorting sorting spikes_d_s table_u table_motion table_still motion
+    clear alfa angle_d cells_d lap_index_d lap_position_d speed speed_d speed_d2 spikes spikes_d_osf spikes_d_s subset_waves times_s times_s_d times_tracking ...
+        timestam tot_position tot_position_d ac_d motion subset_nowaves subset_waves subset_norunning subset_running wave_vec wave_epoch_speed_per_ses ... 
+        wave_epoch_ac_per_ses T T_h T_osf table_u_copy angle angular_speed  lap_index lap_position motor motor_d fraction_still_waves epochs_motion epochs_still
+    clear idx_iwi iwi b speed_c spike_c 
+end
+
+
+%% MEC ALL
+
+clear waves
+MEC_ses=find(big_table(:,10)>3); %Sessions inthe in MEC
+adults=find(big_table(:,3)>15); %Sessions inthe of adults
+sessions=intersect(MEC_ses,adults);
+count=0;
+
+ws=big_table(sessions,6);
+index_nan=isnan(ws);
+sessions(index_nan)=[];
+session_number=big_table(sessions,4);
+days=big_table(sessions,3);
+repeated_days=find(diff(days)==0);
+clear index_to_delete
+
+count=0;
+for w=1:length(repeated_days)
+    ws1=big_table(sessions(repeated_days(w)),6);
+    ws2=big_table(sessions(repeated_days(w)+1),6);
+    
+    if (ws1==1 && ws2==0)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w)+1;
+    elseif  (ws1==0 && ws2==1)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w);
+    elseif (ws1==0 && ws2==0)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w);
+    else
+        print('Other case');
+    end   
+end
+sessions(index_to_delete)=[];
+big_table_2=big_table(sessions,:);
+mec_sessions=sessions;
+
+corr_values_MEC=[];
+corr_values_MEC_smoothed=[];
+for w=1:14%We exclude litter 5 in this analysis
+    row_w=mec_sessions(w);
+    disp(w)    
+    %Parameters
+    count=count+1;
+    mouse=['L',num2str(big_table(mec_sessions(w),1)),'M',num2str(big_table(mec_sessions(w),2))];
+    animal(w,:)=mouse;
+    day=big_table(mec_sessions(w),3);
+    s=big_table(mec_sessions(w),4);    
+    munit=big_table(mec_sessions(w),5); 
+    dt=floor(big_table(mec_sessions(w),8));
+    if isinteger(dt)
+    else
+        dt=floor(dt);
+    end
+    num_clus_discr=10;
+    downsample_factor=1;
+    make_fig=0;
+    
+    %Load spike data
+    load([rec_data_path,strcat('recording_dates_',mouse,'.mat')]);
+    file_name=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name,'-mat');
+    spikes=full(spikes_d_s);
+    [~,T]=size(spikes);
+    file_name_osf=[dpath ['spikes_30ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name_osf,'-mat');
+    spikes_d_osf=full(spikes_d_s);
+    [N,T_osf]=size(spikes_d_osf);        
+    clear spike_smoothed; for n=1:N spike_smoothed(n,:)=smooth(spikes(n,:),speed_smoothing_kernel); end
+
+    % Idenfity waves. Generates spike matrix with only wave frames
+    [table_u,N,T]=identify_waves_latestversion_6_f(mouse,day,num_clus_discr,dt,make_fig,spikes);       
+    table_u_copy=table_u;
+    [~,b]=sort(table_u(:,1));
+    table_u=table_u(b,:);   
+     
+    
+    % Load behavioral data
+    if length(num2str(dates.days(day)))==7
+        st=num2str(dates.days(day));
+        st_new=['0',st];
+        file_name_beh=[dbeh_path,mouse,'\Flavio_2P_',mouse,'_',st_new,'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    else
+        file_name_beh=[dbeh_path,mouse,'\Flavio_2P_',mouse,'_',num2str(dates.days(day)),'_MUnit_',num2str(munit),'_TRACKING.csv'];
+    end    
+    alfa= table2array(readtable(file_name_beh)); % table with behavioral information
+    timestam=alfa(:,1); %Camera time points    
+    if w>6 
+        %Order: Timestamps	Clock	Position	Lap_position	Lap_index	Motor
+        tot_position=alfa(:,3)/10; %in cm
+        lap_position=alfa(:,4)/10; %in cm
+        lap_index=alfa(:,5);
+        motor=alfa(:,6);
+        
+        %%%%%%%%%%%%%%%%%%%%%% Quantities from the table
+        R=max(lap_position)/(2*pi); %in cm
+        speed=diff(tot_position)./diff(timestam); %cm/s % No smoothing
+%         ac=diff(speed)./diff(timestam(1:end-1));
+        angle= lap_position/R;
+        angular_speed=angdiff(angle)./diff(timestam); 
+        
+        %%%%%%%%%%%%%%%%%%%%%% Imaging time steps and camera time steps
+        sampling_rate_tracking=1/(alfa(3,1)-alfa(2,1)); %Hz
+        dt_rate_imaging=1/30.95;
+        sampling_rate_imaging_d=1/(dt_rate_imaging*4);
+        
+        times_s=0.0323:0.0323:(T_osf*0.0323);
+        times_s_d=downsample(times_s,4);
+        times_tracking=times_s_d(1:T); %Imaging time points
+        
+        %%%%%%%%%%%%%%%%%%%%%% Interpolated and downsampled quantities      
+        speed_d=interp1(timestam(1:end-1),speed,times_tracking(1:end-1));
+        speed_d=smooth(speed_d,speed_smoothing_kernel); %2 seconds of smoothing
+        speed_d2=speed_d;
+        speed_d2(speed_d2<threshold_still)=0;
+        speed_d2(end+1)=speed_d2(end);
+        
+    elseif w<=6
+        tot_position=alfa(:,2)/10; %in cm        
+        %%%%%%%%%%%%%%%%%%%%%% Quantities from the table        
+        speed=diff(tot_position)./diff(timestam); %cm/s % Smoothing kernel of 2.3 seconds        
+        %%%%%%%%%%%%%%%%%%%%%% Imaging time steps and camera time steps        
+        times_s=0.0323:0.0323:(T_osf*0.0323);
+        times_s_d=downsample(times_s,4);
+        times_tracking=times_s_d(1:T); %Imaging time points        
+        %%%%%%%%%%%%%%%%%%%%%% Interpolated and downsampled quantities
+%         angle_d=lap_position_d./R;        
+        speed_d=interp1(timestam(1:end-1),speed,times_tracking(1:end-1)); %Interpolated to imagining time points
+        speed_d=smooth(speed_d,speed_smoothing_kernel);
+        speed_d2=speed_d;
+        speed_d2(speed_d2<threshold_still)=0;
+        speed_d2(end+1)=speed_d2(end);
+    end
+    full_speed=[full_speed;speed_d2];   %Concatenates speed across all sessions with waves
+    
+    min_speed(w)=min(speed_d2);
+    max_speed(w)=max(speed_d2);
+    median_speed(w)=median(speed_d2);
+
+    % speed values in frames consistent with waves. Array for all wave-sessions, with info per wave.
+    speed_c=[];
+    spike_c_smoothed=[];
+    spike_c=[];
+
+    for we=1:size(table_u,1) %loop on number of waves per session
+        clear aux; aux=speed_d2(table_u(we,1):table_u(we,2));
+        speed_c=[speed_c;aux];
+        clear aux; aux=spike_smoothed(:,table_u(we,1):table_u(we,2));
+        spike_c_smoothed=[spike_c_smoothed,aux];
+        clear aux; aux=spikes(:,table_u(we,1):table_u(we,2));
+        spike_c=[spike_c,aux];
+    end
+
+    clear aux; aux=corr(spike_c',speed_c); corr_values_MEC=[corr_values_MEC;aux];
+    clear aux; aux=corr(spike_c_smoothed',speed_c); corr_values_MEC_smoothed=[corr_values_MEC_smoothed;aux];
+
+    clear spikes sorting sorting spikes_d_s table_u table_motion table_still motion
+    clear alfa angle_d cells_d lap_index_d lap_position_d speed speed_d speed_d2 spikes spikes_d_osf spikes_d_s subset_waves times_s times_s_d times_tracking ...
+        timestam tot_position tot_position_d ac_d motion subset_nowaves subset_waves subset_norunning subset_running wave_vec wave_epoch_speed_per_ses ... 
+        wave_epoch_ac_per_ses T T_h T_osf table_u_copy angle angular_speed  lap_index lap_position motor motor_d fraction_still_waves epochs_motion epochs_still
+    clear idx_iwi iwi b speed_c spike_c 
+end
+
+
+%% Figures
+
+
+figure
+[prob_VIS,edges]=histcounts(corr_values_VIS,'Normalization','Probability');
+BinWidth=edges(2)-edges(1);
+plot(edges(1:end-1)+BinWidth/2,cumsum(prob_VIS),'linewidth',2.5);
+hold on
+[Prob_PaS,edges]=histcounts(corr_values_PaS,'Normalization','Probability');
+BinWidth=edges(2)-edges(1);
+plot(edges(1:end-1)+BinWidth/2,cumsum(Prob_PaS),'linewidth',2.5);
+hold on
+[Prob_MEC,edges]=histcounts(corr_values_MEC,'Normalization','Probability');
+BinWidth=edges(2)-edges(1);
+plot(edges(1:end-1)+BinWidth/2,cumsum(Prob_MEC),'linewidth',2.5);
+legend('VIS','PaS','MEC');
+ylabel('Cumulative probability');
+xlabel('Correlation between calcium activity and speed');
+set(gca,'fontsize',16);
+box off
+
+[h,p,stat]=ranksum(corr_values_VIS,corr_values_MEC);
+
+
+figure
+[prob_VIS,edges]=histcounts(corr_values_VIS_smoothed,'Normalization','Probability');
+BinWidth=edges(2)-edges(1);
+plot(edges(1:end-1)+BinWidth/2,cumsum(prob_VIS),'linewidth',2.5);
+hold on
+[Prob_PaS,edges]=histcounts(corr_values_PaS_smoothed,'Normalization','Probability');
+BinWidth=edges(2)-edges(1);
+plot(edges(1:end-1)+BinWidth/2,cumsum(Prob_PaS),'linewidth',2.5);
+hold on
+[Prob_MEC,edges]=histcounts(corr_values_MEC_smoothed,'Normalization','Probability');
+BinWidth=edges(2)-edges(1);
+plot(edges(1:end-1)+BinWidth/2,cumsum(Prob_MEC),'linewidth',2.5);
+legend('VIS','PaS','MEC');
+ylabel('Cumulative probability');
+xlabel('Correlation between calcium activity and speed');
+set(gca,'fontsize',16);
+box off
+
+[p,h,stat]=ranksum(corr_values_VIS_smoothed,corr_values_PaS_smoothed,'tail','right');
+[p,h,stat]=ranksum(corr_values_VIS_smoothed,corr_values_MEC_smoothed,'tail','right');
+[p,h,stat]=ranksum(corr_values_MEC_smoothed,corr_values_PaS_smoothed,'tail','right');

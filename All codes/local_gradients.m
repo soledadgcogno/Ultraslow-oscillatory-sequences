@@ -1,0 +1,221 @@
+%% Analysis for each cycle of the oscillation separately - Phase
+clear all
+close all
+
+dpath='C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+plot_all=1;
+[big_table, waves] = get_big_table();
+
+%Params
+pixel_size_new=1.18185;
+pixel_size_old=1.78211;
+N_sh=100;
+count_s=0;
+% data=load('C:\Users\xscogno\MATLAB\Flavio2\Waves\Semi final scripts\Final scripts\Outputs\locking_all_sessions_280821\locking_all_sessions.mat');
+
+for w=1:length(waves)
+    row_w=waves(w);
+    disp(w);
+%     count=count+1;
+    mouse=['L',num2str(big_table(row_w,1)),'M',num2str(big_table(row_w,2))];
+    day=big_table(row_w,3);
+    s=big_table(row_w,4);
+    munit=big_table(row_w,5);
+    clus=10;
+    disc_phase=10;
+%     mean_p=data.mean_p_all_sessions{w};
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Load files
+    load([dpath,strcat('recording_dates_',mouse,'.mat')]);
+    file_name_spk=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    file_name_dff=[dpath ['DFF_120ms_Do_SNRH','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    file_name_anat=[dpath ['Anat_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+
+    load(file_name_anat,'-mat'); %Anatomical information
+    load(file_name_spk,'-mat'); %Spike times
+    spikes_d=full(spikes_d_s);
+    [N,~]=size(spikes_d);
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Anatomical position of each cell
+    if w>10; pixel_size=pixel_size_old; else; pixel_size=pixel_size_new; end
+    for i=1:size(spikes_d,1)
+        r_i(i,:)=[Anat.med{1,i}(1)*pixel_size,Anat.med{1,i}(2)*pixel_size];
+        dist_origin(i)=norm(r_i(i,:));
+    end
+    % Shuffled anatomical position of each cell
+%     N=size(spikes_d,1);
+%     for sh=1:N_sh
+%         sh_ord=randperm(N);
+%         r_i_sh(:,:,sh)=r_i(sh_ord,:);
+%     end
+
+    delta_tissue=nan(N,N);
+    for i=1:N
+        for j=i+1:N
+            delta_tissue(i,j)=norm(r_i(j,:)-r_i(i,:));
+            delta_tissue(j,i)= delta_tissue(i,j);
+        end
+    end
+
+%     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Simulation of traveling wave
+%     [~,idx_p]=sort(mean_p,'ascend');
+%     [~,idx_dist]=sort(dist_origin,'ascend');
+%     [~,sorting_descend,~] = get_sorting(spikes_d);
+%     for i=1:N
+%         r_i_tw(sorting_descend(i),:)=r_i(idx_dist(i),:);
+%     end
+%     pp=discretize(mean_p,[-pi:2*pi/30:pi]);
+%     cc=jet(30);
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Condition on having waves and phase per seq
+    dt=big_table(row_w,8); if ~isinteger(dt); dt=floor(dt); end    
+    clear FRp;
+    for i=1:N
+        FRp(i,:)=full(fire_rate(spikes_d(i,:),1*dt,'g')); %smooth using as kernel the dt chosen for each session
+    end
+    [coefft,scoret,~] = pca(FRp');
+    phase_f=(atan2(smooth(scoret(:,2),floor(1*dt)),smooth(scoret(:,1),floor(1*dt))));
+    radius_f=sqrt(coefft(:,2).*coefft(:,2)+coefft(:,1).*coefft(:,1));
+    num_clus_discr=10;
+    make_fig=0;
+    [table_u,N,T]=identify_waves_latestversion_6_f(mouse,day,num_clus_discr,dt,make_fig,spikes_d);
+    spikes_r=[]; %Reduced spike matrix; only contains wave epochs
+    phase_r=[]; %Reduced phase; only contains wave epochs
+    for wa=1:size(table_u,1)
+        spikes_r=[spikes_r,spikes_d(:,table_u(wa,1):table_u(wa,2))];
+        phase_r=[phase_r;phase_f(table_u(wa,1):table_u(wa,2))];
+    end
+    spikes=spikes_d;
+    phase=phase_r;
+    spikes_d=[];
+    spikes_d=spikes_r; %spikes only during sequences
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Here I calculate the phase per sequence
+    for s=1:size(table_u,1)
+        clear spikes_seq; spikes_seq=spikes(:,table_u(s,1):table_u(s,2));
+        clear phase_seq; phase_seq=phase_f(table_u(s,1):table_u(s,2));
+
+        for i=1:N
+            clear p; p=phase_seq(find(spikes_seq(i,:)));
+            if length(p)>5; mean_p_seq(i,s)=circ_mean(p); else mean_p_seq(i,s)=nan; end
+        end
+    end
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Calculation of gradient per sequence
+    for s=1:size(table_u,1)
+        count_s=count_s+1;
+        mean_p=mean_p_seq(:,s);
+        delta_phase_mean=nan(N,N);
+        for i=1:N
+            for j=i+1:N
+                delta_phase_mean(i,j)=angdiff(mean_p(i),mean_p(j));
+                delta_phase_mean(j,i)=delta_phase_mean(i,j);
+            end
+        end
+
+        delta_phase_sh=nan(N,N,N_sh);
+        for sh=1:N_sh
+            mean_p_sh=mean_p(randperm(N));
+            for i=1:N
+                for j=i+1:N
+                    delta_phase_sh(i,j,sh)=angdiff(mean_p_sh(i),mean_p_sh(j));
+                    delta_phase_sh(j,i,sh)=delta_phase_sh(i,j,sh);
+                end
+            end
+        end
+
+        delta_phase_50=[];delta_phase_100=[];delta_phase_200=[];
+        delta_phase_sh_50=[];delta_phase_sh_100=[];delta_phase_sh_200=[];
+        clear template; template=1:N;
+        tic
+        for i=1:N
+            clear neighbor_cells_50; neighbor_cells_50=find(delta_tissue(i,:)<50 & delta_tissue(i,:)>0); delta_phase_50=[delta_phase_50,delta_phase_mean(i,neighbor_cells_50)];
+            clear neighbor_cells_100; neighbor_cells_100=find(delta_tissue(i,:)<100); delta_phase_100=[delta_phase_100,delta_phase_mean(i,neighbor_cells_100)];
+            clear neighbor_cells_200; neighbor_cells_200=find(delta_tissue(i,:)<200); delta_phase_200=[delta_phase_200,delta_phase_mean(i,neighbor_cells_200)];
+
+            clear phases_sh; phases_sh=reshape(delta_phase_sh(i,:,:),[N*N_sh,1]);
+            clear temp50; temp50=repmat(ismember(template,neighbor_cells_50),1,N_sh);
+            delta_phase_sh_50=[delta_phase_sh_50;phases_sh(temp50)];
+
+            clear temp100; temp100=repmat(ismember(template,neighbor_cells_100),1,N_sh);
+            delta_phase_sh_100=[delta_phase_sh_100;phases_sh(temp100)];
+
+            clear temp200; temp200=repmat(ismember(template,neighbor_cells_200),1,N_sh);
+            delta_phase_sh_200=[delta_phase_sh_200;phases_sh(temp200)];
+        end
+        toc
+
+        [h50(count_s),p50(count_s)] = kstest2(delta_phase_50(~isnan(delta_phase_50)),delta_phase_sh_50(~isnan(delta_phase_sh_50)));
+        [h100(count_s),p100(count_s)] = kstest2(delta_phase_100,delta_phase_sh_100);
+        [h200(count_s),p200(count_s)] = kstest2(delta_phase_200(~isnan(delta_phase_200)),delta_phase_sh_200(~isnan(delta_phase_sh_200)));
+
+        [h50_RS(count_s),p50_RS(count_s)] = ranksum(abs(delta_phase_50),abs(delta_phase_sh_50));
+        [h100_RS(count_s),p100_RS(count_s)] = ranksum(abs(delta_phase_100),abs(delta_phase_sh_100));
+        [h200_RS(count_s),p200_RS(count_s)] = ranksum(abs(delta_phase_200),abs(delta_phase_sh_200));
+
+        clear mean_p mean_p_sh delta_phase_mean delta_phase_sh
+    end
+    clear phase_f phase_r phase_seq radius_f spikes_seq spikes_r spikes_d_s spikes_d spikes scoret template ...
+        phase mean_p_seq FRp r_i r_i_sh table_u sh_ord cells_d delta_tissue delta_phase_mean delta_phase_sh ...
+        dist_origin coefft Anat phases_sh
+
+end
+
+%% Figures and quantification
+
+figure
+subplot(1,3,1)
+histogram(h50_RS,0:0.01:1)
+ylabel('Counts');
+xlabel('p value');
+title('50 \mum');
+set(gca,'fontsize',16);
+subplot(1,3,2)
+histogram(h100_RS,0:0.01:1)
+ylabel('Counts');
+xlabel('p value');
+set(gca,'fontsize',16);
+title('100 \mum');
+subplot(1,3,3)
+histogram(h200_RS,0:0.01:1)
+ylabel('Counts');
+xlabel('p value');
+set(gca,'fontsize',16);
+title('200 \mum');
+
+l50=length(find(h50_RS<0.01));
+l100=length(find(h100_RS<0.01));
+l200=length(find(h200_RS<0.01));
+
+%% Gradient in spatial bins
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Binning of cells' position
+    spatial_bin_size=12;
+    bin_size=spatial_bin_size;      %in um
+    max_length=600;     %size of FOV in x direction
+
+    [C, idx] = bin_cells_position(r_i,bin_size,max_length); %C is the table with the bins, and the data is in idx
+    [~, idx_tw] = bin_cells_position(r_i_tw,bin_size,max_length);
+    for sh=1:N_sh
+        [~, idx_sh(:,sh)] = bin_cells_position(r_i_sh(:,:,sh),bin_size,max_length);
+    end
+
+    for m=1:size(C,1) % Loop on all spatial bins
+        if sum(idx==m)>0
+            phi(C(m,1),C(m,2),l)=circ_mean(mean_p_seq(idx==m,s));
+        end
+        [phi_g_x,phi_g_y]=gradient(phi);
+        norm_phig=pdist( [phi_g_x(:),phi_g_y(:)]);
+
+        norm([phi_g_x,phi_g_y],2);
+        if sum(idx_tw==m)>0
+            phi_tw(C(m,1),C(m,2),l)=circ_mean(mean_p_seq(idx_tw==m,s));
+        end
+        [phitw_g_x,phitw_g_y]=gradient(phi_tw);
+        norm_phig=pdist( [phitw_g_x(:),phitw_g_y(:)]);
+
+        for sh=1:100
+            if sum(idx_tw==m)>0
+                phi_sh(C(m,1),C(m,2),sh)=circ_mean(mean_p_seq(idx_sh(:,sh)==m,s));
+            end
+        end
+    end

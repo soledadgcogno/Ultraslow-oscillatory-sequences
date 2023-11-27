@@ -1,0 +1,556 @@
+%% Fitting sine to ensemble activity - All sessions
+
+
+clear all
+close all
+
+dbeh_path='C:\Users\xscogno\MATLAB\Flavio2\Waves\Tracking data\';
+rec_data_path = 'C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+dpath_spikes='C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+dpath_sorting='C:\Users\xscogno\MATLAB\Flavio2\Waves\Sorting\';
+dpath='C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+save_data_path = 'C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+
+mice_number=12;
+mice=['L08M1';'L08M2';'L08M3';'L08M4';'L09M1';'L09M4';'L05M2';'L05M3';'L05M5';'92227';'92229';'60961'];
+
+ml=[2.64,3.7,2.7,2.64,3.2,3.3,2.52,3.3,3.5,-10,-10,-10]; %ML coordinates
+
+clus=10; 
+fs_120=7.73;
+
+count=0;
+for m=1:mice_number
+    
+    if mice(m,1)~= 'L'
+        mouse=mice(m,:);
+    else
+        if mice(m,2)=='0'
+            mouse=[mice(m,1),mice(m,3:5)];
+            mouse_l=mouse(2);
+            mouse_a=mouse(4);
+        else
+            mouse=mice(m,:);
+            mouse_l=mouse(2:3);
+            mouse_a=mouse(5);
+        end
+    end
+    
+    load([rec_data_path,strcat('recording_dates_',mouse,'.mat')]);
+    load([save_data_path ['WS_Osc_14_',mice(m,:),'.mat']]);
+    ws_ent=load([save_data_path ['WS_Entropy_',mice(m,:),'.mat']]);
+ 
+    for day=1:dates.daysnum
+        for s=1:dates.sesnum(day)
+            disp(s)
+            munit=dates.ses{day}(s);
+            
+            file_name_spk=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+            
+            if (exist(file_name_spk) == 2)
+                disp(day)
+                spk=load(file_name_spk);
+                
+                if s<100
+                    count=count+1;
+                    
+                    if isfield(dates,'actual_day')  == 1
+                        big_table(count,3)=dates.actual_day(day);   %Day # on the wheel
+                    else
+                        big_table(count,3)=day; %Day # on the wheel
+                    end
+                    
+                    if mouse(1) == '9' || mouse(1) == '6'
+                        big_table(count,1)=1;%str2num(mice(m,2:3));
+                        big_table(count,10)=-10; %ML position
+                        if mouse=='92227'
+                            big_table(count,2)=1;
+                        elseif mouse == '92229'
+                            big_table(count,2)=2;
+                        elseif mouse == '60961'
+                            big_table(count,2)=3;
+                        end
+                    else
+                        big_table(count,1)=str2num(mice(m,2:3)); %Litter
+                        big_table(count,2)=str2num(mice(m,end)); %Mouse number
+                        big_table(count,10)=ml(m); %ML position
+                    end
+                    
+                    big_table(count,4)=s; %Session
+                    big_table(count,5)=munit; %munit
+                    big_table(count,6)=WS_stat.WS(day,s); %WS - Osc
+                    big_table(count,11)=ws_ent.WS_stat.wave_score_ent(day,s); %WS - Ent
+                    big_table(count,12)=size(spk.spikes_d_s,1);
+                    
+                    threshold_kl=1;
+                    if ( big_table(count,6)>=threshold_kl )
+                        big_table(count,7)=1;
+                    else
+                        big_table(count,7)=0;
+                    end
+                    
+                    if (isnan(big_table(count,6)))
+                        big_table(count,7)=NaN;
+                        big_table(count,8)=NaN; %dt
+                        big_table(count,9)=NaN; %fft
+                    else
+                        big_table(count,8)=WS_stat.dt(day,s); %dt
+                        big_table(count,9)=WS_stat.FFT(day,s); %fft
+                    end
+                    
+                end
+               clear spk 
+            end
+        end
+        
+    end
+    clear WS_stat 
+end
+
+
+
+% Wave sessions
+
+
+figpath='C:\Users\xscogno\MATLAB\Flavio2\Waves\Semi final scripts\Raster Plots all MEC sessions\';
+MEC_ses=find(big_table(:,10)>3); %Sessions inthe in MEC
+adults=find(big_table(:,3)>15); %Sessions inthe of adults
+sessions=intersect(MEC_ses,adults);
+count=0;
+
+ws=big_table(sessions,6);
+index_nan=isnan(ws);
+sessions(index_nan)=[];
+session_number=big_table(sessions,4);
+days=big_table(sessions,3);
+repeated_days=find(diff(days)==0);
+clear index_to_delete
+
+count=0;
+for w=1:length(repeated_days)
+    ws1=big_table(sessions(repeated_days(w)),6);
+    ws2=big_table(sessions(repeated_days(w)+1),6);
+    
+    if (ws1==1 && ws2==0)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w)+1;
+    elseif  (ws1==0 && ws2==1)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w);
+    elseif (ws1==0 && ws2==0)
+        count=count+1;
+        index_to_delete(count)=repeated_days(w);
+    else
+        print('Other case');
+    end   
+end
+
+sessions(index_to_delete)=[];
+big_table_2=big_table(sessions,:);
+mec_sessions=sessions;
+waves=mec_sessions(find(big_table(mec_sessions,6)==1));
+
+
+% Wave identification
+
+%Identifying waves
+sf=7.73; 
+duration_waves=nan(100,length(waves));
+for w=1:length(waves)
+    disp(w);   
+    row_w=waves(w);
+    count=count+1;
+    mouse=['L',num2str(big_table(waves(w),1)),'M',num2str(big_table(waves(w),2))];
+    day=big_table(waves(w),3);
+    s=big_table(waves(w),4);
+    munit=big_table(waves(w),5);   
+    dt=floor(big_table(waves(w),8));
+        
+    num_clus_discr=10;
+    downsample_factor=1;
+    make_fig=0;
+    
+    file_name_spk=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+    load(file_name_spk,'-mat');
+    spikes=full(spikes_d_s);
+    [~,sorting_before,~]=get_sorting(spikes);
+
+    [table_u,N,T]=identify_waves_latestversion_6_f(mouse,day,num_clus_discr,dt,make_fig,spikes);
+
+     %Prepares new spike matrix by keeping frames with waves only
+    spikes_w=[];
+    for i=1:size(table_u,1)
+        spikes_w = horzcat(spikes_w,spikes(:,table_u(i,1):table_u(i,2)));
+    end
+
+    %Generates ensemble activity
+
+    mat_b=spikes_w(sorting_before,:);
+
+    Ens_b = spikes_downsample(mat_b,clus,1);
+
+    % Fit a sine
+
+    
+    figure
+    for e=1:10
+
+        Ens_b_s = smooth(Ens_b(e,:),dt);
+        %Ens_a_s = smooth(Ens_a(e,:),dt);
+
+        signal=Ens_b_s(10:end);
+        x=(1:length(signal))';
+
+        if length(signal)<4096
+            [Powerspec2,Powerfreq2] = doPwelch(signal,fs_120,0.5*4096);
+        else
+            [Powerspec2,Powerfreq2] = doPwelch(signal,fs_120,1*4096);
+        end
+
+        [peak_freq(e),peak_psd(e),quality(e)]=check_peak_quality_3b_f(Powerspec2,Powerfreq2);
+
+        subplot(2,5,e)
+        xline(0.0073,'--r','LineWidth',2);
+        hold on
+        plot(Powerfreq2(3:54),Powerspec2(3:54),'k','Linewidth',2);
+        hold on
+        set(gca,'fontsize',16);
+        axis([-inf inf 0 0.1]),
+        ylabel('PSD');
+        xlabel('Frequency (Hz)');
+        title(['Ensemble ',num2str(e)]);
+        axis square
+
+
+        clear Ens_b_s Ens_a_s signal Powerspec2 Powerfreq2
+
+    end
+
+    frequency_table(w,:)=peak_freq;    
+    number_waves(w)=size(table_u,1);
+    duration_waves(1:number_waves(w),w)=(table_u(:,2)-table_u(:,1))*downsample_factor/sf;
+    session_duration(w)=T/sf;
+    wave_epochs_duration(w)=size(spikes_w,2)/sf;
+    wave_rate(w)=number_waves(w)/session_duration(w);
+    wave_rate_wave_epochs(w)=number_waves(w)/wave_epochs_duration(w);
+
+    
+
+    clear table_u spikes dt spikes_d_s row_w peak_freq peak_psd quality mat_b spikes_W Ens_b sorting_before
+ 
+end
+
+mouse_idx=[1,1,1,2,2,2,3,3,3,3,4,4,4,4,4];
+
+figure
+errorbar(wave_rate_wave_epochs',mean(frequency_table,2),std(frequency_table,[],2)/sqrt(10),...
+    'ko','Markersize',7,'MarkerFaceColor','k');
+hold on
+axis([0 0.04 0 0.04]);
+l=refline(1,0);
+l.LineStyle='--';
+l.Color=[170 170 170]/255;
+l.LineWidth=1.5;
+ylabel('Mean ensemble frequency (Hz)');
+xlabel('Oscillation frequency (Hz)');
+set(gca,'fontsize',16)
+box off
+
+
+for e=1:10
+    frequency_table_c(:,e)=frequency_table(:,e)-wave_rate_wave_epochs';
+end
+
+for e=1:10
+    rel(:,e)=frequency_table(:,e)./wave_rate_wave_epochs' - 1;
+end
+
+for e=1:10
+    relo(:,e)=frequency_table(:,e)./wave_rate_wave_epochs' ;
+end
+
+frequency_table_c_r=reshape(frequency_table_c,[10*15,1]);
+rel_r=reshape(rel,[10*15,1]);
+relo_r=reshape(relo,[10*15,1]);
+
+figure
+h=histogram(frequency_table_c_r,15);
+axis([-0.03 0.03 0 40])
+h.FaceColor='k';
+box off
+ylabel('Counts');
+xlabel('Ensemble frequency - Oscillation frequency');
+set(gca,'fontsize',16);
+hold on
+x = -0.03:0.001:0.03;
+mu = mean(frequency_table_c_r);
+sigma = std(frequency_table_c_r);
+f = 0.75*exp(-(x-mu).^2./(2*sigma^2))./(sigma*sqrt(2*pi));
+plot(x,f,'LineWidth',1.5)
+legend('Data','Gaussian');
+legend boxoff
+
+
+figure
+h=histogram(relo_r,[-0.125:0.25:4.25]);
+axis([0 4.5 0 55])
+h.FaceColor='k';
+box off
+ylabel('Counts');
+xlabel('Ensemble frequency / Pop. oscillation frequency');
+set(gca,'fontsize',16,'XColor','k','YColor','k');
+prctile(relo_r,25)
+prctile(relo_r,75)
+xline(prctile(relo_r,25),'--r','linewidth',2,'linewidth,2');
+xline(prctile(relo_r,75),'--r','linewidth,2');
+
+
+
+
+
+
+[h,p,stat]=ttest(frequency_table_c_r);
+[h,p,stat]=ttest(rel_r');
+
+[h,p,stat]=signrank(frequency_table_c_r);
+signrank
+% %% Sine fitting to ensemble activity - One session
+% 
+% clear all
+% close all
+% 
+% rec_data_path = 'C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+% dpath='C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+% save_data_path = 'C:\Users\xscogno\MATLAB\Flavio2\Preprocessed_data\';
+% 
+% clusters=10;
+% mice_number=14;
+% mice=['L08M1';'L08M2';'L08M3';'L08M4';'L09M1';'L09M4';'L10M1';'L10M2';'L05M2';'L05M3';'L05M5';'92227';'92229';'60961'];
+% 
+% %dt=117; %For L9M4 day 17
+% clus=10;
+% fs_120=7.73;
+% 
+% figure
+% 
+% m=2; %2
+% 
+% if mice(m,1)~= 'L'
+%     mouse=mice(m,:);
+% else
+%     if mice(m,2)=='0'
+%         mouse=[mice(m,1),mice(m,3:5)];
+%         mouse_l=mouse(2);
+%         mouse_a=mouse(4);
+%     else
+%         mouse=mice(m,:);
+%         mouse_l=mouse(2:3);
+%         mouse_a=mouse(5);
+%     end
+% end
+% 
+% load([rec_data_path,strcat('recording_dates_',mouse,'.mat')]);
+% load([rec_data_path ['WS_Osc_14_','L08M2','.mat']]);
+% 
+% 
+% day=19; %19
+% s=1; %:dates.sesnum(day)
+% disp(s)
+% munit=dates.ses{day}(s);
+% file_name=[dpath ['spikes_120ms_Do_THR1p5_SNRH_FoV1','_',mouse,'_day',num2str(day),'_MUnit',num2str(munit),'.mat']];
+% 
+% if exist(file_name)==2
+%     load(file_name,'-mat');
+%     spikes=full(spikes_d_s);
+%     [~,sorting_before,~]=get_sorting(spikes);
+% 
+%     % dt
+%     dt=WS_stat.dt(day,s);
+%     if isinteger(dt)
+%     else
+%         dt=floor(dt);
+%     end
+% 
+%     num_clus_discr=10;
+%     make_fig=0;
+%     [table_u,N,T]=identify_waves_latestversion_6(mouse,day,num_clus_discr,dt,make_fig,spikes);
+% 
+%     %Prepares new spike matrix by keeping frames with waves only
+%     spikes_w=[];
+%     for i=1:size(table_u,1)
+%         spikes_w = horzcat(spikes_w,spikes(:,table_u(i,1):table_u(i,2)));
+%     end
+% 
+%     [~,sorting_after,~]=get_sorting(spikes_w);
+% 
+%     %Generates ensemble activity
+% 
+%     mat_b=spikes_w(sorting_before,:);
+%     mat_a=spikes_w(sorting_after,:);
+% 
+%     Ens_b = spikes_downsample(mat_b,clus,1);
+%     Ens_a = spikes_downsample(mat_a,clus,1);
+% 
+% %     Ens_b_ts = spikes_downsample(mat_b,clus,40);
+% %     Ens_a_ts = spikes_downsample(mat_a,clus,40);
+% 
+%     % Fit a sine
+% 
+% 
+%     for e=1:10
+% 
+%         Ens_b_s = smooth(Ens_b(e,:),dt);
+%         %Ens_a_s = smooth(Ens_a(e,:),dt);
+% 
+%         signal=Ens_b_s(10:end);
+%         x=(1:length(signal))';
+% 
+%         %                     figure
+%         %                     plot(signal)
+% 
+%         yu = max(signal);
+%         yl = min(signal);
+%         yr = (yu-yl)/2;                               % Range of signal
+% 
+% %         yz = signal-yr; %mean(signal);                     %-yu+(yr/2);
+%         yz = signal-mean(signal);%signal-yr; %mean(signal);                     %-yu+(yr/2);
+% 
+%         zx1 = x(yz .* circshift(yz,1) <= 0);          % Find zero-crossings
+%         zx2 = zx1(yz(zx1) >= 0);                      % Find zero-crossings
+%         per = mean(diff(zx2));                        % Estimate period
+% 
+% %         figure 
+% %         plot(yz);
+% %         hold on
+% %         scatter(zx2,0*ones(1,length(zx2)));
+% 
+%         ym = yr;% abs(-yu+(yr/2));%mean(signal);                          % Estimate bias
+% 
+%         fit_f = @(b,x)  b(1).*(sin(2*pi*x./b(2) + 2*pi/b(3))) + b(4);    % Function to fit
+%         fcn = @(b) sum((fit_f(b,x) - signal).^2);                              % Least-Squares cost function
+%         s = fminsearch(fcn, [yr;  per;  -1;  ym]);
+% 
+%         model= s(1).*(sin(2*pi*x./s(2) + 2*pi/s(3))) + s(4);
+% 
+% %         figure
+% %         plot(x*1/fs_120,signal,'k');
+% %         hold on
+% %         plot(x*1/fs_120,model,'linewidth',2)
+% %         legend('Data','Model')
+% %         axis([-inf inf -inf inf]);
+% %         title(['Ensemble ',num2str(e)]);
+% %         ylabel('Ensemble activity');
+% %         xlabel('Time (s)');
+% 
+% 
+%         [Powerspec2,Powerfreq2] = doPwelch(signal,fs_120,2*4096);
+%         [peak_freq(e),peak_psd(e),quality(e)]=check_peak_quality_3b_f(Powerspec2,Powerfreq2);
+% 
+%         subplot(2,5,e)
+%         plot(Powerfreq2(3:80),Powerspec2(3:80),'k','Linewidth',2);
+%         set(gca,'fontsize',16);
+%         axis([-inf inf 0 0.15]),
+%         title(['Ensemble ',num2str(e)]);
+%         axis square
+% 
+% 
+%         clear Ens_b_s Ens_a_s signal Powerspec2 Powerfreq2
+% 
+%     end
+% 
+% end
+
+
+
+
+% %% Fit a sine
+% 
+%  x=1:22000;
+%  signal=0.5*(((sin(0.0055*x)))).^2; 
+%  
+%  
+%  yu = max(signal);
+% yl = min(signal);
+% yr = (yu-yl);                               % Range of ‘y’
+% yz = signal-yu+(yr/2);
+% zx = x(yz .* circshift(yz,[0 1]) <= 0);     % Find zero-crossings
+% per = 2*mean(diff(zx));                     % Estimate period
+% ym = mean(signal); 
+%  
+%  
+%  ft=fittype(' a.*abs((sin(2*pi*x./b + 2*pi/c))) ', 'independent','x','coefficients',{'a','b','c'});
+%  [fitobject,gof,output] = fit((1:length(x))',[signal]',ft, 'StartPoint',[yr;  per;  -1]);
+%  
+%  figure
+%  plot(fitobject,x,signal)
+ 
+% %% Just fitting a sine
+% 
+%  x=1:100000;
+%  signal=0.5*abs(sin(0.0055*x)); 
+%  
+%  
+% x=0:0.5:10;
+% signal=5*sin(x);
+% 
+%  yu = max(signal);
+% yl = min(signal);
+% yr = (yu-yl);                               % Range of ‘y’
+% yz = signal-yu+(yr/2);
+% zx = x(yz .* circshift(yz,[0 1]) <= 0);     % Find zero-crossings
+% per = 2*mean(diff(zx));                     % Estimate period
+% ym = mean(signal);   
+% 
+% fit_f = @(b,x)  b(1).*(sin(2*pi*x./b(2) + 2*pi/b(3))) + b(4);    % Function to fit
+% fcn = @(b) sum((fit_f(b,x) - signal).^2);                              % Least-Squares cost function
+% s = fminsearch(fcn, [yr;  per;  -1;  ym])  
+% s2 = fminunc(fcn, [yr;  per;  -1;  ym])  
+% 
+% 
+% 
+% x=0:0.5:10;
+% signal=5*sin(x);
+% 
+%  ft=fittype('a*sin(b*x)', 'independent','x','coefficients',{'a','b'});
+%  [fitobject] = fit((1:length(x))',[signal]',ft);
+%  
+%  figure
+%  plot(fitobject,x,signal)
+%  
+%  %% Fit a sine to data
+%  
+% signal=Ens_b_s(5:end);
+% %  signal=signal-mean(signal);
+%  x=(1:length(signal))';
+%  
+%  figure
+%  plot(signal)
+%  
+% yu = max(signal);
+% yl = min(signal);
+% yr = (yu-yl)/2;                               % Range of ‘y’
+% 
+% yz = signal-mean(signal);%-yu+(yr/2);
+% zx1 = x(yz .* circshift(yz,1) <= 0);     % Find zero-crossings
+% zx2 = zx1(yz(zx1) >= 0);     % Find zero-crossings
+% per = mean(diff(zx2));                     % Estimate period
+% 
+% ym = abs(-yu+(yr/2));%mean(signal);                          % Estimate bias
+% 
+% fit_f = @(b,x)  b(1).*(sin(2*pi*x./b(2) + 2*pi/b(3))) + b(4);    % Function to fit
+% fcn = @(b) sum((fit_f(b,x) - signal).^2);                              % Least-Squares cost function
+% s = fminsearch(fcn, [yr;  per;  -1;  ym]);  
+% 
+% model= s(1).*(sin(2*pi*x./s(2) + 2*pi/s(3))) + s(4);
+% 
+% figure
+% scatter(x,signal,'.');
+% hold on
+% plot(model,'linewidth',2) 
+% % 
+% % 
+%  ft=fittype(' a.*(sin(2*pi*x./b + 2*pi/c)) + d', 'independent','x','coefficients',{'a','b','c','d'});
+%  [fitobject,gof,output] = fit(x,signal,ft,'StartPoint',[yr;  per;  0.5 ; ym]);
+%  
+%  figure
+%  plot(fitobject,x,signal)
